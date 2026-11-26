@@ -25,6 +25,9 @@ struct AudioSlowDownApp: App {
                 .onOpenURL { url in
                     engine.loadFile(url: url)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    engine.cleanupTemporaryFile()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)

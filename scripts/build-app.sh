@@ -118,6 +118,9 @@ cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
                 <string>com.microsoft.waveform-audio</string>
                 <string>public.aiff-audio</string>
                 <string>org.xiph.flac</string>
+                <string>public.mpeg-4</string>
+                <string>com.apple.quicktime-movie</string>
+                <string>public.movie</string>
             </array>
         </dict>
     </array>

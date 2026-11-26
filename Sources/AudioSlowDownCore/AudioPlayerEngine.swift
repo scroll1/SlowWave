@@ -32,6 +32,7 @@ public final class AudioPlayerEngine {
     public private(set) var isPlaying: Bool = false
     public private(set) var waveformSamples: [Float] = []
     public private(set) var isLoadingWaveform: Bool = false
+    public private(set) var isExtractingAudio: Bool = false
     public private(set) var errorMessage: String?
 
     public var playbackRate: Float = 1.0 {
@@ -99,6 +100,8 @@ public final class AudioPlayerEngine {
 
     private var progressTimer: Timer?
     private var waveformTask: Task<Void, Never>?
+    private var extractionTask: Task<Void, Never>?
+    private var temporaryExtractedURL: URL?
 
     public init() {
         engine.attach(playerNode)
@@ -160,65 +163,106 @@ public final class AudioPlayerEngine {
         errorMessage = nil
         stopPlaybackInternal(resetPosition: true)
         waveformTask?.cancel()
+        extractionTask?.cancel()
+        cleanupTemporaryFile()
 
         let didStartAccessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
 
-        do {
-            let file = try AVAudioFile(forReading: url)
-            let format = file.processingFormat
-            let frames = file.length
-            guard frames > 0, format.sampleRate > 0 else {
-                errorMessage = "The selected audio file is empty."
-                return
-            }
-
-            if engine.isRunning {
-                engine.stop()
-            }
-
-            engine.disconnectNodeOutput(playerNode)
-            engine.disconnectNodeOutput(timePitch)
-            engine.connect(playerNode, to: timePitch, format: format)
-            engine.connect(timePitch, to: engine.mainMixerNode, format: format)
-
-            timePitch.rate = playbackRate
-            timePitch.pitch = 0.0
-            timePitch.overlap = 12.0
-            applyVolume()
-
-            engine.prepare()
-
-            audioFile = file
-            fileURL = url
-            fileName = url.lastPathComponent
-            sampleRate = format.sampleRate
-            totalFrames = frames
-            duration = Double(frames) / format.sampleRate
-            seekFrame = 0
-            currentTime = 0
-            needsReschedule = true
-            clearLoop()
-
-            waveformSamples = []
-            isLoadingWaveform = true
-            waveformTask = Task { [weak self] in
-                do {
-                    let samples = try await WaveformExtractor.extractSamples(from: url, sampleCount: 120)
-                    guard !Task.isCancelled else { return }
-                    self?.waveformSamples = samples
-                    self?.isLoadingWaveform = false
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    self?.isLoadingWaveform = false
+        // Fast path: try opening directly with AVAudioFile (MP3, M4A, WAV, AIFF, FLAC, CAF, etc.)
+        if let directFile = try? AVAudioFile(forReading: url), directFile.length > 0, directFile.processingFormat.sampleRate > 0 {
+            defer {
+                if didStartAccessing {
+                    url.stopAccessingSecurityScopedResource()
                 }
             }
-        } catch {
-            errorMessage = "Could not open audio file: \(error.localizedDescription)"
+            configureLoadedFile(directFile, playableURL: url, displayURL: url)
+            return
+        }
+
+        // Fallback: extract audio track from video containers (MP4, MOV, M4V, etc.)
+        isExtractingAudio = true
+        fileName = url.lastPathComponent
+        extractionTask = Task { [weak self] in
+            defer {
+                if didStartAccessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            do {
+                let extractedURL = try await AudioTrackExtractor.extractAudio(from: url)
+                guard !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: extractedURL)
+                    return
+                }
+                let file = try AVAudioFile(forReading: extractedURL)
+                guard file.length > 0, file.processingFormat.sampleRate > 0 else {
+                    try? FileManager.default.removeItem(at: extractedURL)
+                    self?.isExtractingAudio = false
+                    self?.errorMessage = "The extracted audio track is empty."
+                    return
+                }
+                self?.temporaryExtractedURL = extractedURL
+                self?.isExtractingAudio = false
+                self?.configureLoadedFile(file, playableURL: extractedURL, displayURL: url)
+            } catch is CancellationError {
+                self?.isExtractingAudio = false
+            } catch {
+                self?.isExtractingAudio = false
+                self?.errorMessage = "Could not open file: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func cleanupTemporaryFile() {
+        if let tempURL = temporaryExtractedURL {
+            try? FileManager.default.removeItem(at: tempURL)
+            temporaryExtractedURL = nil
+        }
+    }
+
+    private func configureLoadedFile(_ file: AVAudioFile, playableURL: URL, displayURL: URL) {
+        let format = file.processingFormat
+        let frames = file.length
+
+        if engine.isRunning {
+            engine.stop()
+        }
+
+        engine.disconnectNodeOutput(playerNode)
+        engine.disconnectNodeOutput(timePitch)
+        engine.connect(playerNode, to: timePitch, format: format)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+
+        timePitch.rate = playbackRate
+        timePitch.pitch = 0.0
+        timePitch.overlap = 12.0
+        applyVolume()
+
+        engine.prepare()
+
+        audioFile = file
+        fileURL = displayURL
+        fileName = displayURL.lastPathComponent
+        sampleRate = format.sampleRate
+        totalFrames = frames
+        duration = Double(frames) / format.sampleRate
+        seekFrame = 0
+        currentTime = 0
+        needsReschedule = true
+        clearLoop()
+
+        waveformSamples = []
+        isLoadingWaveform = true
+        waveformTask = Task { [weak self] in
+            do {
+                let samples = try await WaveformExtractor.extractSamples(from: playableURL, sampleCount: 120)
+                guard !Task.isCancelled else { return }
+                self?.waveformSamples = samples
+                self?.isLoadingWaveform = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.isLoadingWaveform = false
+            }
         }
     }
 

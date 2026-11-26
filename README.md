@@ -6,7 +6,7 @@ A free, native macOS audio player by **BrennanLabs** that lets you slow down (or
 - **Pitch-Preserving Time Stretching**: Powered by `AVAudioEngine` and `AVAudioUnitTimePitch` with pitch locked to `0 st` (0 cents).
 - **Focused Slowdown Controls**: Quick speed presets (`0.25×`, `0.5×`, `0.65×`, `0.75×`, `0.85×`, `0.9×`, `1.0×`, `1.5×`, `2.0×`), a preset-aligned speed slider, and `±5%` steppers.
 - **Interactive Waveform & A–B Practice Markers**: Click or drag on the waveform to scrub, place **A** and **B** markers (drag markers directly or nudge by `±0.2s` with a 1.5s cut preview on **B**), toggle **Start from A** (pausing with `Space` returns to **A** and playback stops at **B**), or toggle **Loop** to repeat A→B continuously.
-- **Broad Audio Format Support**: Drag & drop or open `MP3`, `M4A`, `WAV`, `AIFF`, `FLAC`, and `CAF` files.
+- **Broad Audio & Video Format Support**: Drag & drop or open `MP3`, `M4A`, `WAV`, `AIFF`, `FLAC`, `CAF`, plus `MP4`, `MOV`, and `M4V` video files (plays audio only).
 - **Keyboard Shortcuts**:
   - `Space` — Play / Pause
   - `⌘O` — Open Audio File

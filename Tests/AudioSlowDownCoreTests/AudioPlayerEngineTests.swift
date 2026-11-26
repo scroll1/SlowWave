@@ -135,6 +135,20 @@ struct AudioPlayerEngineTests {
         #expect(abs(midpointRate - 1.25) < 0.005)
     }
 
+    @Test("AudioTrackExtractor extracts playable M4A audio from media asset")
+    func testAudioTrackExtraction() async throws {
+        let wavURL = try makeTemporaryWavFile(durationSeconds: 1.0)
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let extractedURL = try await AudioTrackExtractor.extractAudio(from: wavURL)
+        defer { try? FileManager.default.removeItem(at: extractedURL) }
+
+        #expect(FileManager.default.fileExists(atPath: extractedURL.path))
+        let file = try AVAudioFile(forReading: extractedURL)
+        #expect(file.length > 0)
+        #expect(file.processingFormat.sampleRate > 0)
+    }
+
     @Test("WaveformExtractor returns normalized amplitude buckets")
     func testWaveformExtraction() async throws {
         let url = try makeTemporaryWavFile(durationSeconds: 1.0)

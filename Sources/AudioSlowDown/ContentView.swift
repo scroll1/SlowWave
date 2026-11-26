@@ -64,7 +64,10 @@ struct ContentView: View {
         .mp3,
         .mpeg4Audio,
         .wav,
-        .aiff
+        .aiff,
+        .movie,
+        .mpeg4Movie,
+        .quickTimeMovie
     ]
 
     var body: some View {
@@ -74,7 +77,9 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 headerSection
 
-                if engine.hasFileLoaded {
+                if engine.isExtractingAudio {
+                    extractingCard
+                } else if engine.hasFileLoaded {
                     playerSection
                 } else {
                     emptyDropZone
@@ -260,17 +265,17 @@ struct ContentView: View {
                     )
             }
 
-            Text("Drop an audio file to slow it down")
+            Text("Drop an audio or video file to slow it down")
                 .font(.headline)
 
-            Text("MP3, M4A, WAV, AIFF, FLAC, and CAF · Pitch stays untouched")
+            Text("MP3, M4A, WAV, AIFF, FLAC, CAF, plus MP4 & MOV (audio only)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Button {
                 isImporterPresented = true
             } label: {
-                Text("Choose Audio File…")
+                Text("Choose Audio or Video…")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 18)
@@ -291,6 +296,25 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 196)
+        .glassCard(cornerRadius: 18)
+    }
+
+    private var extractingCard: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+
+            Text("Extracting audio track…")
+                .font(.headline)
+
+            Text(engine.fileName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 196)
