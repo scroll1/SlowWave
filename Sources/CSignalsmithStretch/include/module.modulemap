@@ -1,0 +1,4 @@
+module CSignalsmithStretch {
+    header "CSignalsmithStretch.h"
+    export *
+}

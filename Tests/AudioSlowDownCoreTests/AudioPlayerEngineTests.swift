@@ -149,6 +149,29 @@ struct AudioPlayerEngineTests {
         #expect(file.processingFormat.sampleRate > 0)
     }
 
+    @Test("SignalsmithAudioRenderer renders stretched stereo and mono audio without crashing")
+    func testSignalsmithRendererProcessesAudio() throws {
+        let wavURL = try makeTemporaryWavFile(durationSeconds: 1.0)
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let file = try AVAudioFile(forReading: wavURL)
+        let renderer = SignalsmithAudioRenderer()
+        renderer.configure(file: file)
+        renderer.setPlaybackRate(0.5)
+        renderer.setPlaying(true)
+
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 512) else {
+            throw NSError(domain: "AudioPlayerEngineTests", code: 3)
+        }
+        outBuffer.frameLength = 512
+
+        for _ in 0..<20 {
+            let status = renderer.render(frameCount: 512, audioBufferList: outBuffer.mutableAudioBufferList)
+            #expect(status == noErr)
+        }
+        #expect(renderer.currentTimeSeconds() >= 0)
+    }
+
     @Test("WaveformExtractor returns normalized amplitude buckets")
     func testWaveformExtraction() async throws {
         let url = try makeTemporaryWavFile(durationSeconds: 1.0)

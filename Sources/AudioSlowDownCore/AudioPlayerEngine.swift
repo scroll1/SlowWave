@@ -16,8 +16,8 @@ public enum TimeFormatting {
     }
 }
 
-/// Native macOS audio player powered by AVAudioEngine and AVAudioUnitTimePitch.
-/// Changes playback speed smoothly while keeping pitch locked at 0 cents.
+/// Native audio player powered by AVAudioEngine + Signalsmith Stretch (MIT)
+/// for studio-grade, phase-locked pitch-preserving time stretching.
 @MainActor
 @Observable
 public final class AudioPlayerEngine {
@@ -42,9 +42,7 @@ public final class AudioPlayerEngine {
                 playbackRate = clamped
                 return
             }
-            timePitch.rate = clamped
-            // Always guarantee pitch remains locked to 0 cents (original pitch).
-            timePitch.pitch = 0.0
+            renderer.setPlaybackRate(clamped)
         }
     }
 
@@ -72,11 +70,11 @@ public final class AudioPlayerEngine {
 
     /// Current pitch shift in cents (always 0.0 for pitch-preserving playback).
     public var pitchCents: Float {
-        timePitch.pitch
+        0.0
     }
 
     public var hasFileLoaded: Bool {
-        audioFile != nil
+        fileURL != nil && duration > 0
     }
 
     public var hasValidLoop: Bool {
@@ -84,36 +82,29 @@ public final class AudioPlayerEngine {
         return end - start >= 0.25
     }
 
-    // MARK: - Private AVAudioEngine state
+    // MARK: - Private Audio Engine state
 
     private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private let timePitch = AVAudioUnitTimePitch()
+    private let renderer = SignalsmithAudioRenderer()
+    private var sourceNode: AVAudioSourceNode?
 
-    private var audioFile: AVAudioFile?
     private var sampleRate: Double = 44_100
     private var totalFrames: AVAudioFramePosition = 0
-    private var seekFrame: AVAudioFramePosition = 0
-    private var needsReschedule: Bool = true
-    private var playbackGeneration: UInt64 = 0
     private var isPreviewingLoopEnd: Bool = false
 
     private var progressTimer: Timer?
     private var waveformTask: Task<Void, Never>?
     private var extractionTask: Task<Void, Never>?
     private var temporaryExtractedURL: URL?
+    private var activeSecurityScopedURL: URL?
 
     public init() {
-        engine.attach(playerNode)
-        engine.attach(timePitch)
-
-        timePitch.rate = playbackRate
-        timePitch.pitch = 0.0
-        timePitch.overlap = 12.0
-
-        engine.connect(playerNode, to: timePitch, format: nil)
-        engine.connect(timePitch, to: engine.mainMixerNode, format: nil)
         applyVolume()
+        renderer.onReachedEnd = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleReachedEnd()
+            }
+        }
     }
 
     public static func clampRate(_ rate: Float) -> Float {
@@ -165,29 +156,25 @@ public final class AudioPlayerEngine {
         waveformTask?.cancel()
         extractionTask?.cancel()
         cleanupTemporaryFile()
+        releaseSecurityScopedAccess()
 
-        let didStartAccessing = url.startAccessingSecurityScopedResource()
+        if url.startAccessingSecurityScopedResource() {
+            activeSecurityScopedURL = url
+        }
 
-        // Fast path: try opening directly with AVAudioFile (MP3, M4A, WAV, AIFF, FLAC, CAF, etc.)
-        if let directFile = try? AVAudioFile(forReading: url), directFile.length > 0, directFile.processingFormat.sampleRate > 0 {
-            defer {
-                if didStartAccessing {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
+        // Fast path: open directly with AVAudioFile (MP3, M4A, WAV, AIFF, FLAC, CAF, etc.)
+        if let directFile = try? AVAudioFile(forReading: url),
+           directFile.length > 0,
+           directFile.processingFormat.sampleRate > 0
+        {
             configureLoadedFile(directFile, playableURL: url, displayURL: url)
             return
         }
 
-        // Fallback: extract audio track from video containers (MP4, MOV, M4V, etc.)
+        // Fallback: extract audio track from video containers (MP4, MOV, M4V)
         isExtractingAudio = true
         fileName = url.lastPathComponent
         extractionTask = Task { [weak self] in
-            defer {
-                if didStartAccessing {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
             do {
                 let extractedURL = try await AudioTrackExtractor.extractAudio(from: url)
                 guard !Task.isCancelled else {
@@ -218,52 +205,7 @@ public final class AudioPlayerEngine {
             try? FileManager.default.removeItem(at: tempURL)
             temporaryExtractedURL = nil
         }
-    }
-
-    private func configureLoadedFile(_ file: AVAudioFile, playableURL: URL, displayURL: URL) {
-        let format = file.processingFormat
-        let frames = file.length
-
-        if engine.isRunning {
-            engine.stop()
-        }
-
-        engine.disconnectNodeOutput(playerNode)
-        engine.disconnectNodeOutput(timePitch)
-        engine.connect(playerNode, to: timePitch, format: format)
-        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
-
-        timePitch.rate = playbackRate
-        timePitch.pitch = 0.0
-        timePitch.overlap = 12.0
-        applyVolume()
-
-        engine.prepare()
-
-        audioFile = file
-        fileURL = displayURL
-        fileName = displayURL.lastPathComponent
-        sampleRate = format.sampleRate
-        totalFrames = frames
-        duration = Double(frames) / format.sampleRate
-        seekFrame = 0
-        currentTime = 0
-        needsReschedule = true
-        clearLoop()
-
-        waveformSamples = []
-        isLoadingWaveform = true
-        waveformTask = Task { [weak self] in
-            do {
-                let samples = try await WaveformExtractor.extractSamples(from: playableURL, sampleCount: 120)
-                guard !Task.isCancelled else { return }
-                self?.waveformSamples = samples
-                self?.isLoadingWaveform = false
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.isLoadingWaveform = false
-            }
-        }
+        releaseSecurityScopedAccess()
     }
 
     public func togglePlayPause() {
@@ -275,24 +217,23 @@ public final class AudioPlayerEngine {
     }
 
     public func play() {
-        guard audioFile != nil else { return }
+        guard hasFileLoaded else { return }
         errorMessage = nil
 
-        // If stopped at/past the B marker or at the end of the track, restart from A (or 0).
         let atLoopEnd: Bool = {
             guard let end = loopEnd else { return false }
             return currentTime >= end - 0.05
         }()
 
-        if seekFrame >= totalFrames - 1 || atLoopEnd {
+        if currentTime >= duration - 0.05 || atLoopEnd {
+            let target: TimeInterval
             if let start = loopStart, (loopEnd == nil || start < (loopEnd ?? duration)) {
-                seekFrame = frame(for: start)
-                currentTime = start
+                target = start
             } else {
-                seekFrame = 0
-                currentTime = 0
+                target = 0
             }
-            needsReschedule = true
+            currentTime = target
+            renderer.seek(toFrame: frame(for: target))
         }
 
         do {
@@ -304,11 +245,8 @@ public final class AudioPlayerEngine {
             return
         }
 
-        if needsReschedule {
-            scheduleFromSeekFrame()
-        }
-
-        playerNode.play()
+        renderer.setPlaybackRate(playbackRate)
+        renderer.setPlaying(true)
         isPlaying = true
         startProgressTimer()
     }
@@ -316,24 +254,16 @@ public final class AudioPlayerEngine {
     public func pause() {
         guard isPlaying else { return }
         isPreviewingLoopEnd = false
-        updateCurrentTimeFromNode()
-
-        // Once both A and B markers are set (and Snap to A is enabled), pausing returns the playhead to A.
-        if hasValidLoop && snapToAOnPause, let start = loopStart {
-            playbackGeneration &+= 1
-            playerNode.stop()
-            isPlaying = false
-            stopProgressTimer()
-            seekFrame = frame(for: start)
-            currentTime = start
-            needsReschedule = true
-            return
-        }
-
-        seekFrame = frame(for: currentTime)
-        playerNode.pause()
+        renderer.setPlaying(false)
         isPlaying = false
         stopProgressTimer()
+
+        if hasValidLoop && snapToAOnPause, let start = loopStart {
+            currentTime = start
+            renderer.seek(toFrame: frame(for: start))
+        } else {
+            currentTime = min(max(0, renderer.currentTimeSeconds()), duration)
+        }
     }
 
     public func stop() {
@@ -341,33 +271,10 @@ public final class AudioPlayerEngine {
     }
 
     public func seek(to time: TimeInterval) {
-        guard audioFile != nil else { return }
+        guard hasFileLoaded else { return }
         let clampedTime = min(max(0, time), duration)
-        let targetFrame = frame(for: clampedTime)
-        let wasPlaying = isPlaying
-
-        playbackGeneration &+= 1
-        playerNode.stop()
-
-        seekFrame = targetFrame
         currentTime = clampedTime
-        needsReschedule = true
-
-        if wasPlaying {
-            do {
-                if !engine.isRunning {
-                    try engine.start()
-                }
-                scheduleFromSeekFrame()
-                playerNode.play()
-                isPlaying = true
-                startProgressTimer()
-            } catch {
-                isPlaying = false
-                stopProgressTimer()
-                errorMessage = "Audio engine failed to resume: \(error.localizedDescription)"
-            }
-        }
+        renderer.seek(toFrame: frame(for: clampedTime))
     }
 
     public func skip(by seconds: TimeInterval) {
@@ -440,14 +347,9 @@ public final class AudioPlayerEngine {
         let lowerBound = loopStart ?? 0
         let previewStart = max(lowerBound, end - preRoll)
 
-        playbackGeneration &+= 1
-        playerNode.stop()
-        isPlaying = false
-        stopProgressTimer()
-
-        seekFrame = frame(for: previewStart)
+        renderer.setPlaying(false)
         currentTime = previewStart
-        needsReschedule = true
+        renderer.seek(toFrame: frame(for: previewStart))
         isPreviewingLoopEnd = true
 
         play()
@@ -471,8 +373,51 @@ public final class AudioPlayerEngine {
 
     // MARK: - Private helpers
 
-    private func applyVolume() {
-        engine.mainMixerNode.outputVolume = isMuted ? 0.0 : volume
+    private func configureLoadedFile(_ file: AVAudioFile, playableURL: URL, displayURL: URL) {
+        let format = file.processingFormat
+        let frames = file.length
+
+        if engine.isRunning {
+            engine.stop()
+        }
+        if let existingNode = sourceNode {
+            engine.disconnectNodeOutput(existingNode)
+            engine.detach(existingNode)
+            sourceNode = nil
+        }
+
+        renderer.configure(file: file)
+        renderer.setPlaybackRate(playbackRate)
+
+        let node = renderer.makeSourceNode(format: format)
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: format)
+        sourceNode = node
+
+        applyVolume()
+        engine.prepare()
+
+        fileURL = displayURL
+        fileName = displayURL.lastPathComponent
+        sampleRate = format.sampleRate
+        totalFrames = frames
+        duration = Double(frames) / format.sampleRate
+        currentTime = 0
+        clearLoop()
+
+        waveformSamples = []
+        isLoadingWaveform = true
+        waveformTask = Task { [weak self] in
+            do {
+                let samples = try await WaveformExtractor.extractSamples(from: playableURL, sampleCount: 120)
+                guard !Task.isCancelled else { return }
+                self?.waveformSamples = samples
+                self?.isLoadingWaveform = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.isLoadingWaveform = false
+            }
+        }
     }
 
     private func frame(for time: TimeInterval) -> AVAudioFramePosition {
@@ -480,59 +425,18 @@ public final class AudioPlayerEngine {
         return min(max(0, raw), totalFrames)
     }
 
-    private func scheduleFromSeekFrame() {
-        guard let file = audioFile else { return }
-        let remaining = totalFrames - seekFrame
-        guard remaining > 0 else { return }
-
-        let generation = playbackGeneration &+ 1
-        playbackGeneration = generation
-        // Flush any paused/queued segment so playback starts immediately at seekFrame.
-        playerNode.stop()
-        needsReschedule = false
-
-        let frameCount = AVAudioFrameCount(min(remaining, AVAudioFramePosition(UInt32.max)))
-        playerNode.scheduleSegment(
-            file,
-            startingFrame: seekFrame,
-            frameCount: frameCount,
-            at: nil,
-            completionCallbackType: .dataPlayedBack
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleSegmentCompletion(generation: generation)
-            }
-        }
-    }
-
-    private func handleSegmentCompletion(generation: UInt64) {
-        guard generation == playbackGeneration else { return }
-
-        if isLoopEnabled, let start = loopStart, hasValidLoop {
-            seek(to: start)
-            if !isPlaying {
-                play()
-            }
-            return
-        }
-
-        isPlaying = false
-        stopProgressTimer()
-        currentTime = duration
-        seekFrame = totalFrames
-        needsReschedule = true
+    private func applyVolume() {
+        engine.mainMixerNode.outputVolume = isMuted ? 0.0 : volume
     }
 
     private func stopPlaybackInternal(resetPosition: Bool) {
         isPreviewingLoopEnd = false
-        playbackGeneration &+= 1
-        playerNode.stop()
+        renderer.setPlaying(false)
         isPlaying = false
         stopProgressTimer()
-        needsReschedule = true
         if resetPosition {
-            seekFrame = 0
             currentTime = 0
+            renderer.seek(toFrame: 0)
         }
     }
 
@@ -552,36 +456,41 @@ public final class AudioPlayerEngine {
 
     private func tickProgress() {
         guard isPlaying else { return }
-        updateCurrentTimeFromNode()
+        currentTime = min(max(0, renderer.currentTimeSeconds()), duration)
 
         if let end = loopEnd, currentTime >= end {
             if !isPreviewingLoopEnd, isLoopEnabled, let start = loopStart, hasValidLoop {
-                seek(to: start)
+                currentTime = start
+                renderer.seek(toFrame: frame(for: start))
             } else {
-                // Stop cleanly at the B marker.
                 isPreviewingLoopEnd = false
-                playbackGeneration &+= 1
-                playerNode.stop()
+                renderer.setPlaying(false)
                 isPlaying = false
                 stopProgressTimer()
-                seekFrame = frame(for: end)
                 currentTime = end
-                needsReschedule = true
+                renderer.seek(toFrame: frame(for: end))
             }
         }
     }
 
-    private func updateCurrentTimeFromNode() {
-        guard
-            let nodeTime = playerNode.lastRenderTime,
-            let playerTime = playerNode.playerTime(forNodeTime: nodeTime),
-            sampleRate > 0
-        else {
+    private func handleReachedEnd() {
+        if !isPreviewingLoopEnd, isLoopEnabled, let start = loopStart, hasValidLoop {
+            currentTime = start
+            renderer.seek(toFrame: frame(for: start))
+            renderer.setPlaying(true)
             return
         }
 
-        let currentFrame = seekFrame + playerTime.sampleTime
-        let clampedFrame = min(max(0, currentFrame), totalFrames)
-        currentTime = Double(clampedFrame) / sampleRate
+        isPreviewingLoopEnd = false
+        isPlaying = false
+        stopProgressTimer()
+        currentTime = duration
+    }
+
+    private func releaseSecurityScopedAccess() {
+        if let url = activeSecurityScopedURL {
+            url.stopAccessingSecurityScopedResource()
+            activeSecurityScopedURL = nil
+        }
     }
 }

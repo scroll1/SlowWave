@@ -6,6 +6,13 @@ public enum WaveformExtractor {
     public static func extractSamples(from url: URL, sampleCount: Int = 120) async throws -> [Float] {
         guard sampleCount > 0 else { return [] }
         return try await Task.detached(priority: .userInitiated) {
+            let didStartAccessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
             let file = try AVAudioFile(forReading: url)
             let totalFrames = Int(file.length)
             guard totalFrames > 0 else { return Array(repeating: 0.05, count: sampleCount) }

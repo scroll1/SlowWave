@@ -18,7 +18,17 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "AudioSlowDownCore"
+            name: "CSignalsmithStretch",
+            path: "Sources/CSignalsmithStretch",
+            sources: ["CSignalsmithStretch.cpp"],
+            publicHeadersPath: "include",
+            cxxSettings: [
+                .headerSearchPath("vendor")
+            ]
+        ),
+        .target(
+            name: "AudioSlowDownCore",
+            dependencies: ["CSignalsmithStretch"]
         ),
         .executableTarget(
             name: "SlowWave",
@@ -29,5 +39,6 @@ let package = Package(
             name: "AudioSlowDownCoreTests",
             dependencies: ["AudioSlowDownCore"]
         )
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )
