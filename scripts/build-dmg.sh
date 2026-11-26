@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="SlowWave"
-VERSION="1.0.0"
+VERSION="1.1.0"
 BUILD_DIR="$ROOT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 DMG_PATH="$BUILD_DIR/$APP_NAME-$VERSION.dmg"

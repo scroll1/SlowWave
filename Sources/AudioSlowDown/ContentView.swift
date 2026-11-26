@@ -308,10 +308,20 @@ struct ContentView: View {
                 loopStart: engine.loopStart,
                 loopEnd: engine.loopEnd,
                 isLoopEnabled: engine.isLoopEnabled,
-                isLoading: engine.isLoadingWaveform
-            ) { newTime in
-                engine.seek(to: newTime)
-            }
+                isLoading: engine.isLoadingWaveform,
+                onSeek: { newTime in
+                    engine.seek(to: newTime)
+                },
+                onMoveLoopStart: { newStart in
+                    engine.setLoopStart(newStart)
+                },
+                onMoveLoopEnd: { newEnd in
+                    engine.setLoopEnd(newEnd)
+                },
+                onEndMoveLoopEnd: {
+                    engine.previewLoopEnd()
+                }
+            )
 
             HStack {
                 Text(TimeFormatting.format(engine.currentTime))
@@ -404,45 +414,104 @@ struct ContentView: View {
             Divider()
                 .opacity(0.25)
 
-            // A-B Loop bar
+            // A-B Markers bar — centered prominently below Play/Pause
             HStack(spacing: 8) {
-                Label("A–B Loop", systemImage: "repeat")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                markerPillButton(
+                    badge: "A",
+                    title: engine.loopStart.map { TimeFormatting.format($0) } ?? "Set A",
+                    accent: .cyan,
+                    isActive: engine.loopStart != nil,
+                    onSet: { engine.setLoopStartAtCurrentTime() },
+                    onNudgeBack: { engine.nudgeLoopStart(by: -0.2) },
+                    onNudgeForward: { engine.nudgeLoopStart(by: 0.2) },
+                    onClear: { engine.clearLoopStart() }
+                )
+                .help("Set A marker (click < / > to nudge by 0.2s)")
 
-                glassPillButton(
-                    title: engine.loopStart.map { "A · \(TimeFormatting.format($0))" } ?? "Set A",
-                    isActive: engine.loopStart != nil
-                ) {
-                    engine.setLoopStartAtCurrentTime()
-                }
-
-                glassPillButton(
-                    title: engine.loopEnd.map { "B · \(TimeFormatting.format($0))" } ?? "Set B",
-                    isActive: engine.loopEnd != nil
-                ) {
-                    engine.setLoopEndAtCurrentTime()
-                }
+                markerPillButton(
+                    badge: "B",
+                    title: engine.loopEnd.map { TimeFormatting.format($0) } ?? "Set B",
+                    accent: .purple,
+                    isActive: engine.loopEnd != nil,
+                    onSet: { engine.setLoopEndAtCurrentTime() },
+                    onNudgeBack: { engine.nudgeLoopEnd(by: -0.2, preview: true) },
+                    onNudgeForward: { engine.nudgeLoopEnd(by: 0.2, preview: true) },
+                    onClear: { engine.clearLoopEnd() }
+                )
+                .help("Set B marker (click < / > or drag B to nudge and preview the cut)")
 
                 if engine.hasValidLoop {
-                    Toggle("Loop", isOn: $engine.isLoopEnabled)
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .font(.caption)
-                }
-
-                if engine.loopStart != nil || engine.loopEnd != nil {
-                    Button("Clear") {
-                        engine.clearLoop()
+                    Button {
+                        engine.snapToAOnPause.toggle()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: engine.snapToAOnPause ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Start from A")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(engine.snapToAOnPause ? .white : .primary.opacity(0.8))
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background {
+                            if engine.snapToAOnPause {
+                                Capsule()
+                                    .fill(Color.cyan.opacity(0.35))
+                                    .background(.regularMaterial, in: Capsule())
+                            } else {
+                                Capsule()
+                                    .fill(.regularMaterial)
+                            }
+                        }
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(
+                                    engine.snapToAOnPause ? Color.cyan.opacity(0.75) : Color.white.opacity(0.22),
+                                    lineWidth: 1
+                                )
+                        )
                     }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+                    .buttonStyle(.plain)
+                    .help("When on, Space/Pause returns to A. Turn off to pause in place while keeping A & B.")
 
-                Spacer()
+                    Button {
+                        engine.isLoopEnabled.toggle()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "repeat")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Loop")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(engine.isLoopEnabled ? .white : .primary.opacity(0.8))
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background {
+                            if engine.isLoopEnabled {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color.cyan, Color.blue],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            } else {
+                                Capsule()
+                                    .fill(.regularMaterial)
+                            }
+                        }
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(engine.isLoopEnabled ? 0.42 : 0.22), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Repeat A→B continuously instead of stopping at B")
+                }
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
         }
         .padding(16)
         .glassCard(cornerRadius: 18)
@@ -631,28 +700,102 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    private func glassPillButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption.monospacedDigit().weight(isActive ? .semibold : .medium))
-                .foregroundStyle(isActive ? .white : .primary.opacity(0.85))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background {
-                    if isActive {
-                        Capsule()
-                            .fill(Color.cyan.opacity(0.75))
-                    } else {
-                        Capsule()
-                            .fill(.thinMaterial)
+    private func markerPillButton(
+        badge: String,
+        title: String,
+        accent: Color,
+        isActive: Bool,
+        onSet: @escaping () -> Void,
+        onNudgeBack: @escaping () -> Void,
+        onNudgeForward: @escaping () -> Void,
+        onClear: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 0) {
+            Button(action: onSet) {
+                HStack(spacing: 6) {
+                    Text(badge)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(accent.opacity(isActive ? 1.0 : 0.78), in: Circle())
+
+                    if !isActive {
+                        Text(title)
+                            .font(.callout.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.primary)
                     }
                 }
-                .overlay(
-                    Capsule()
-                        .strokeBorder(Color.white.opacity(isActive ? 0.4 : 0.18), lineWidth: 0.75)
-                )
+                .padding(.leading, 7)
+                .padding(.trailing, isActive ? 4 : 14)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isActive {
+                Button(action: onNudgeBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 20, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Nudge \(badge) earlier by 0.2s")
+
+                Button(action: onSet) {
+                    Text(title)
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Move \(badge) to current playhead")
+
+                Button(action: onNudgeForward) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 20, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Nudge \(badge) later by 0.2s")
+
+                Divider()
+                    .frame(height: 16)
+                    .opacity(0.35)
+
+                Button(action: onClear) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 26, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Clear \(badge) marker")
+            }
         }
-        .buttonStyle(.plain)
+        .background {
+            if isActive {
+                Capsule()
+                    .fill(accent.opacity(0.32))
+                    .background(.regularMaterial, in: Capsule())
+            } else {
+                Capsule()
+                    .fill(.regularMaterial)
+            }
+        }
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    isActive ? accent.opacity(0.75) : Color.white.opacity(0.24),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: isActive ? accent.opacity(0.28) : Color.black.opacity(0.10), radius: 6, x: 0, y: 2)
     }
 
     private var volumeIconName: String {

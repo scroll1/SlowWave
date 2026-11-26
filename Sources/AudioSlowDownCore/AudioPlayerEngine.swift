@@ -67,6 +67,7 @@ public final class AudioPlayerEngine {
     public var loopStart: TimeInterval?
     public var loopEnd: TimeInterval?
     public var isLoopEnabled: Bool = false
+    public var snapToAOnPause: Bool = true
 
     /// Current pitch shift in cents (always 0.0 for pitch-preserving playback).
     public var pitchCents: Float {
@@ -94,6 +95,7 @@ public final class AudioPlayerEngine {
     private var seekFrame: AVAudioFramePosition = 0
     private var needsReschedule: Bool = true
     private var playbackGeneration: UInt64 = 0
+    private var isPreviewingLoopEnd: Bool = false
 
     private var progressTimer: Timer?
     private var waveformTask: Task<Void, Never>?
@@ -232,9 +234,14 @@ public final class AudioPlayerEngine {
         guard audioFile != nil else { return }
         errorMessage = nil
 
-        // If at the end of the track, restart from beginning (or loop start).
-        if seekFrame >= totalFrames - 1 {
-            if isLoopEnabled, let start = loopStart, hasValidLoop {
+        // If stopped at/past the B marker or at the end of the track, restart from A (or 0).
+        let atLoopEnd: Bool = {
+            guard let end = loopEnd else { return false }
+            return currentTime >= end - 0.05
+        }()
+
+        if seekFrame >= totalFrames - 1 || atLoopEnd {
+            if let start = loopStart, (loopEnd == nil || start < (loopEnd ?? duration)) {
                 seekFrame = frame(for: start)
                 currentTime = start
             } else {
@@ -264,7 +271,21 @@ public final class AudioPlayerEngine {
 
     public func pause() {
         guard isPlaying else { return }
+        isPreviewingLoopEnd = false
         updateCurrentTimeFromNode()
+
+        // Once both A and B markers are set (and Snap to A is enabled), pausing returns the playhead to A.
+        if hasValidLoop && snapToAOnPause, let start = loopStart {
+            playbackGeneration &+= 1
+            playerNode.stop()
+            isPlaying = false
+            stopProgressTimer()
+            seekFrame = frame(for: start)
+            currentTime = start
+            needsReschedule = true
+            return
+        }
+
         seekFrame = frame(for: currentTime)
         playerNode.pause()
         isPlaying = false
@@ -324,8 +345,16 @@ public final class AudioPlayerEngine {
         if let end = loopEnd, end <= currentTime {
             loopEnd = nil
             isLoopEnabled = false
-        } else if hasValidLoop {
-            isLoopEnabled = true
+        }
+    }
+
+    public func setLoopStart(_ time: TimeInterval) {
+        guard hasFileLoaded else { return }
+        let maxAllowed = loopEnd.map { max(0, $0 - 0.25) } ?? duration
+        let clamped = min(max(0, time), maxAllowed)
+        loopStart = clamped
+        if hasValidLoop && !isPlaying {
+            seek(to: clamped)
         }
     }
 
@@ -333,12 +362,61 @@ public final class AudioPlayerEngine {
         guard hasFileLoaded else { return }
         if let start = loopStart, currentTime > start + 0.25 {
             loopEnd = currentTime
-            isLoopEnabled = true
         } else {
             loopStart = 0
             loopEnd = max(0.25, currentTime)
-            isLoopEnabled = hasValidLoop
         }
+    }
+
+    public func setLoopEnd(_ time: TimeInterval) {
+        guard hasFileLoaded else { return }
+        let minAllowed = loopStart.map { min(duration, $0 + 0.25) } ?? 0.25
+        loopEnd = min(max(minAllowed, time), duration)
+        if hasValidLoop && !isPlaying, let start = loopStart {
+            seek(to: start)
+        }
+    }
+
+    public func nudgeLoopStart(by delta: TimeInterval) {
+        guard let current = loopStart else { return }
+        setLoopStart(current + delta)
+    }
+
+    public func nudgeLoopEnd(by delta: TimeInterval, preview: Bool = true) {
+        guard let current = loopEnd else { return }
+        setLoopEnd(current + delta)
+        if preview {
+            previewLoopEnd()
+        }
+    }
+
+    /// Plays a short pre-roll ending right at the B marker so the user can hear the exact cut point.
+    public func previewLoopEnd(preRoll: TimeInterval = 1.5) {
+        guard hasFileLoaded, let end = loopEnd else { return }
+        let lowerBound = loopStart ?? 0
+        let previewStart = max(lowerBound, end - preRoll)
+
+        playbackGeneration &+= 1
+        playerNode.stop()
+        isPlaying = false
+        stopProgressTimer()
+
+        seekFrame = frame(for: previewStart)
+        currentTime = previewStart
+        needsReschedule = true
+        isPreviewingLoopEnd = true
+
+        play()
+    }
+
+    public func clearLoopStart() {
+        loopStart = nil
+        isLoopEnabled = false
+    }
+
+    public func clearLoopEnd() {
+        loopEnd = nil
+        isLoopEnabled = false
     }
 
     public func clearLoop() {
@@ -365,6 +443,8 @@ public final class AudioPlayerEngine {
 
         let generation = playbackGeneration &+ 1
         playbackGeneration = generation
+        // Flush any paused/queued segment so playback starts immediately at seekFrame.
+        playerNode.stop()
         needsReschedule = false
 
         let frameCount = AVAudioFrameCount(min(remaining, AVAudioFramePosition(UInt32.max)))
@@ -400,6 +480,7 @@ public final class AudioPlayerEngine {
     }
 
     private func stopPlaybackInternal(resetPosition: Bool) {
+        isPreviewingLoopEnd = false
         playbackGeneration &+= 1
         playerNode.stop()
         isPlaying = false
@@ -429,8 +510,20 @@ public final class AudioPlayerEngine {
         guard isPlaying else { return }
         updateCurrentTimeFromNode()
 
-        if isLoopEnabled, let start = loopStart, let end = loopEnd, hasValidLoop, currentTime >= end {
-            seek(to: start)
+        if let end = loopEnd, currentTime >= end {
+            if !isPreviewingLoopEnd, isLoopEnabled, let start = loopStart, hasValidLoop {
+                seek(to: start)
+            } else {
+                // Stop cleanly at the B marker.
+                isPreviewingLoopEnd = false
+                playbackGeneration &+= 1
+                playerNode.stop()
+                isPlaying = false
+                stopProgressTimer()
+                seekFrame = frame(for: end)
+                currentTime = end
+                needsReschedule = true
+            }
         }
     }
 

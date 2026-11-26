@@ -87,11 +87,37 @@ struct AudioPlayerEngineTests {
         engine.setLoopEndAtCurrentTime()
 
         #expect(engine.hasValidLoop)
+        #expect(!engine.isLoopEnabled)
+
+        engine.isLoopEnabled = true
         #expect(engine.isLoopEnabled)
 
-        engine.clearLoop()
+        // Dragging A past B clamps cleanly before B, and dragging B before A clamps after A,
+        // while keeping the paused playhead cued to A ready to play
+        engine.setLoopStart(1.9)
+        #expect((engine.loopStart ?? 0) <= (engine.loopEnd ?? 0) - 0.24)
+        #expect(abs(engine.currentTime - (engine.loopStart ?? 0)) < 0.01)
+        engine.setLoopEnd(0.1)
+        #expect((engine.loopEnd ?? 0) >= (engine.loopStart ?? 0) + 0.24)
+        #expect(abs(engine.currentTime - (engine.loopStart ?? 0)) < 0.01)
+
+        // Nudging A and B adjusts them cleanly by delta
+        let beforeA = engine.loopStart ?? 0
+        engine.nudgeLoopStart(by: -0.2)
+        #expect(abs((engine.loopStart ?? 0) - max(0, beforeA - 0.2)) < 0.01)
+
+        let beforeB = engine.loopEnd ?? 0
+        engine.nudgeLoopEnd(by: 0.2, preview: false)
+        #expect(abs((engine.loopEnd ?? 0) - min(engine.duration, beforeB + 0.2)) < 0.01)
+
+        engine.clearLoopEnd()
+        #expect(engine.loopStart != nil)
+        #expect(engine.loopEnd == nil)
         #expect(!engine.hasValidLoop)
         #expect(!engine.isLoopEnabled)
+
+        engine.clearLoopStart()
+        #expect(engine.loopStart == nil)
     }
 
     @Test("Slider position aligns each speed preset to its button index")
