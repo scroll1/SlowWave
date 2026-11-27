@@ -359,8 +359,12 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Transport controls
-            HStack(spacing: 16) {
+            // Transport controls (+ Start from A & Loop playback settings on the same row)
+            HStack(spacing: 12) {
+                if engine.hasValidLoop {
+                    startFromAPill
+                }
+
                 Button {
                     engine.skip(by: -5)
                 } label: {
@@ -433,120 +437,48 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Skip forward 5 seconds (⌘→)")
+
+                if engine.hasValidLoop {
+                    loopPill
+                }
             }
 
             Divider()
                 .opacity(0.25)
 
-            // A-B Markers bar — Row 1: A & B pills (no destructive clear inside), Row 2: Clear A/B + modes
-            VStack(spacing: 8) {
-                HStack(spacing: 10) {
-                    markerPillButton(
-                        badge: "A",
-                        title: engine.loopStart.map { TimeFormatting.format($0) } ?? "Set A",
-                        accent: .cyan,
-                        isActive: engine.loopStart != nil,
-                        onSet: { engine.setLoopStartAtCurrentTime() },
-                        onNudgeBack: { engine.nudgeLoopStart(by: -0.2) },
-                        onNudgeForward: { engine.nudgeLoopStart(by: 0.2) }
-                    )
-                    .help("Set A marker (click < / > to nudge by 0.2s)")
-
-                    markerPillButton(
-                        badge: "B",
-                        title: engine.loopEnd.map { TimeFormatting.format($0) } ?? "Set B",
-                        accent: .purple,
-                        isActive: engine.loopEnd != nil,
-                        onSet: { engine.setLoopEndAtCurrentTime() },
-                        onNudgeBack: { engine.nudgeLoopEnd(by: -0.2, preview: true) },
-                        onNudgeForward: { engine.nudgeLoopEnd(by: 0.2, preview: true) }
-                    )
-                    .help("Set B marker (click < / > or drag B to nudge and preview the cut)")
+            // A-B Markers bar — Clear A on left of A, Clear B on right of B
+            HStack(spacing: 10) {
+                if engine.loopStart != nil {
+                    clearMarkerPillButton(label: "Clear A", accent: .cyan) {
+                        engine.clearLoopStart()
+                    }
                 }
 
-                if engine.loopStart != nil || engine.loopEnd != nil {
-                    HStack(spacing: 8) {
-                        if engine.loopStart != nil {
-                            clearMarkerPillButton(label: "Clear A", accent: .cyan) {
-                                engine.clearLoopStart()
-                            }
-                        }
+                markerPillButton(
+                    badge: "A",
+                    title: engine.loopStart.map { TimeFormatting.format($0) } ?? "Set A",
+                    accent: .cyan,
+                    isActive: engine.loopStart != nil,
+                    onSet: { engine.setLoopStartAtCurrentTime() },
+                    onNudgeBack: { engine.nudgeLoopStart(by: -0.2) },
+                    onNudgeForward: { engine.nudgeLoopStart(by: 0.2) }
+                )
+                .help("Set A marker (click < / > to nudge by 0.2s)")
 
-                        if engine.loopEnd != nil {
-                            clearMarkerPillButton(label: "Clear B", accent: .purple) {
-                                engine.clearLoopEnd()
-                            }
-                        }
+                markerPillButton(
+                    badge: "B",
+                    title: engine.loopEnd.map { TimeFormatting.format($0) } ?? "Set B",
+                    accent: .purple,
+                    isActive: engine.loopEnd != nil,
+                    onSet: { engine.setLoopEndAtCurrentTime() },
+                    onNudgeBack: { engine.nudgeLoopEnd(by: -0.2, preview: true) },
+                    onNudgeForward: { engine.nudgeLoopEnd(by: 0.2, preview: true) }
+                )
+                .help("Set B marker (click < / > or drag B to nudge and preview the cut)")
 
-                        if engine.hasValidLoop {
-                            Button {
-                                engine.snapToAOnPause.toggle()
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: engine.snapToAOnPause ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 12, weight: .semibold))
-                                    Text("Start from A")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                .foregroundStyle(engine.snapToAOnPause ? .white : .primary.opacity(0.8))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background {
-                                    if engine.snapToAOnPause {
-                                        Capsule()
-                                            .fill(Color.cyan.opacity(0.35))
-                                            .background(.regularMaterial, in: Capsule())
-                                    } else {
-                                        Capsule()
-                                            .fill(.regularMaterial)
-                                    }
-                                }
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(
-                                            engine.snapToAOnPause ? Color.cyan.opacity(0.75) : Color.white.opacity(0.22),
-                                            lineWidth: 1
-                                        )
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .help("When on, Space/Pause returns to A. Turn off to pause in place while keeping A & B.")
-
-                            Button {
-                                engine.isLoopEnabled.toggle()
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "repeat")
-                                        .font(.system(size: 11, weight: .semibold))
-                                    Text("Loop")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                .foregroundStyle(engine.isLoopEnabled ? .white : .primary.opacity(0.8))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background {
-                                    if engine.isLoopEnabled {
-                                        Capsule()
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: [Color.cyan, Color.blue],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                    } else {
-                                        Capsule()
-                                            .fill(.regularMaterial)
-                                    }
-                                }
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(Color.white.opacity(engine.isLoopEnabled ? 0.42 : 0.22), lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .help("Repeat A→B continuously instead of stopping at B")
-                        }
+                if engine.loopEnd != nil {
+                    clearMarkerPillButton(label: "Clear B", accent: .purple) {
+                        engine.clearLoopEnd()
                     }
                 }
             }
@@ -739,6 +671,78 @@ struct ContentView: View {
     }
 
     // MARK: - Helpers
+
+    private var startFromAPill: some View {
+        Button {
+            engine.snapToAOnPause.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: engine.snapToAOnPause ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Start from A")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(engine.snapToAOnPause ? .white : .primary.opacity(0.8))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background {
+                if engine.snapToAOnPause {
+                    Capsule()
+                        .fill(Color.cyan.opacity(0.35))
+                        .background(.regularMaterial, in: Capsule())
+                } else {
+                    Capsule()
+                        .fill(.regularMaterial)
+                }
+            }
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        engine.snapToAOnPause ? Color.cyan.opacity(0.75) : Color.white.opacity(0.22),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .help("When on, Space/Pause returns to A. Turn off to pause in place while keeping A & B.")
+    }
+
+    private var loopPill: some View {
+        Button {
+            engine.isLoopEnabled.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "repeat")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Loop")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(engine.isLoopEnabled ? .white : .primary.opacity(0.8))
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background {
+                if engine.isLoopEnabled {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.cyan, Color.blue],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                } else {
+                    Capsule()
+                        .fill(.regularMaterial)
+                }
+            }
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.white.opacity(engine.isLoopEnabled ? 0.42 : 0.22), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Repeat A→B continuously instead of stopping at B")
+    }
 
     private func clearMarkerPillButton(label: String, accent: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
