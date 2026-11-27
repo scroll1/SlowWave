@@ -15,7 +15,7 @@ A free, native macOS audio player by **BrennanLabs** that lets you slow down (or
   - `⌘0` — Reset Speed to `1.0×`
 
 ## Download & Install
-1. Download the latest `SlowWave-1.2.0.dmg` from the [Releases](../../releases) page.
+1. Download the latest `SlowWave-1.2.1.dmg` from the [Releases](../../releases) page.
 2. Open the `.dmg` file and drag **SlowWave** into **Applications**.
 3. **First launch note (macOS Gatekeeper)**: Because SlowWave is free, open-source software and is not notarized with a paid Apple Developer certificate, macOS may block it the first time you open it. To open it:
    - Try launching **SlowWave** once, then open **System Settings → Privacy & Security** and click **Open Anyway**, *or*
@@ -38,7 +38,7 @@ Build the standalone macOS app bundle (`build/SlowWave.app`):
 open build/SlowWave.app
 ```
 
-Build the distributable `.dmg` installer (`build/SlowWave-1.2.0.dmg`):
+Build the distributable `.dmg` installer (`build/SlowWave-1.2.1.dmg`):
 ```bash
 ./scripts/build-dmg.sh
 ```
